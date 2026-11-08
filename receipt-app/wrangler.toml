@@ -1,0 +1,20 @@
+name = "receipt-to-freee"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# freeeのトークン・設定を保存するKV
+# `npx wrangler kv namespace create STORE` で作成し、出力された id をここに貼る
+[[kv_namespaces]]
+binding = "STORE"
+id = "REPLACE_WITH_YOUR_KV_ID"
+
+[vars]
+# 例: https://receipt-to-freee.<あなたのサブドメイン>.workers.dev/auth/callback
+FREEE_REDIRECT_URI = "REPLACE_ME"
+
+# 以下はシークレット（`npx wrangler secret put <NAME>` で登録。ここには書かない）
+#   ANTHROPIC_API_KEY   … Claude APIキー
+#   FREEE_CLIENT_ID     … freeeアプリのClient ID
+#   FREEE_CLIENT_SECRET … freeeアプリのClient Secret
+#   APP_PASSWORD        … このアプリを開くときのパスワード
