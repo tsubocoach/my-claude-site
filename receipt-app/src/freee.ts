@@ -7,6 +7,7 @@ export interface Env {
   FREEE_CLIENT_SECRET: string;
   FREEE_REDIRECT_URI: string;
   APP_PASSWORD: string;
+  SYNC_TOKEN?: string; // 任意: ショートカット等から /api/sync を呼ぶための合言葉
 }
 
 const AUTH_BASE = "https://accounts.secure.freee.co.jp/public_api";

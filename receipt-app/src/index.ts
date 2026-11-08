@@ -1,10 +1,14 @@
 // レシート → freee 登録アプリ（Cloudflare Worker）
+//
+// 運用: 撮影するたびに AI で読み取って「受信箱」に保存し、
+//       好きなタイミング（週1回など）で受信箱の未登録分をまとめて freee に登録する。
 import { analyzeReceipt } from "./claude";
 import {
   type Env,
   FreeeApiError,
   FreeeClient,
   FreeeNotConnected,
+  type Masters,
   authorizeUrl,
   disconnect,
   exchangeCode,
@@ -12,11 +16,26 @@ import {
   findSimilarDeals,
   loadMasters,
 } from "./freee";
+import {
+  type Entry,
+  type EntryData,
+  deleteEntry,
+  entryTotal,
+  getEntry,
+  getImage,
+  listEntries,
+  newId,
+  saveEntry,
+  saveImage,
+} from "./store";
 import { APP_HTML, LOGIN_HTML } from "./ui";
 
 const COOKIE = "rf_session";
 const MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 type MediaType = (typeof MEDIA_TYPES)[number];
+
+/** 1回の /api/sync で処理する件数（Workers 無料プランの外部リクエスト上限 50 に収めるため） */
+const SYNC_BATCH = 8;
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
@@ -46,6 +65,12 @@ async function route(req: Request, env: Env): Promise<Response> {
       },
     });
   }
+
+  // 外部（ショートカット等）からの一括登録: Authorization: Bearer <SYNC_TOKEN>
+  if (pathname === "/api/sync" && method === "POST" && hasSyncToken(req, env)) {
+    return json(await syncPending(env, url.searchParams.get("all") === "1"));
+  }
+
   if (!(await isLoggedIn(req, env))) {
     if (pathname.startsWith("/api/")) return json({ error: "ログインが必要です" }, 401);
     return Response.redirect(new URL("/login", url).toString(), 303);
@@ -105,8 +130,7 @@ async function route(req: Request, env: Env): Promise<Response> {
     const fc = await FreeeClient.create(env);
     const masters = await loadMasters(env, fc);
     const rules = (await env.STORE.get("rules")) ?? "";
-    const today = new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10); // JST
-    const analysis = await analyzeReceipt(env.ANTHROPIC_API_KEY, masters, rules, body.image, mediaType, today);
+    const analysis = await analyzeReceipt(env.ANTHROPIC_API_KEY, masters, rules, body.image, mediaType, todayJst());
 
     // 一覧に無い科目・口座が返ってきた場合は空にして、画面で選んでもらう
     const itemIds = new Set(masters.account_items.map((a) => a.id));
@@ -114,88 +138,215 @@ async function route(req: Request, env: Env): Promise<Response> {
     if (analysis.suggested_walletable_id && !masters.walletables.some((w) => w.id === analysis.suggested_walletable_id)) {
       analysis.suggested_walletable_id = null;
     }
-    const duplicates = await findSimilarDeals(fc, analysis.issue_date, analysis.total_amount).catch(() => []);
-    return json({ analysis, duplicates });
+
+    // 二重登録チェック: freee 登録済み ＋ 受信箱の中
+    const [inFreee, inbox] = await Promise.all([
+      findSimilarDeals(fc, analysis.issue_date, analysis.total_amount).catch(() => []),
+      listEntries(env),
+    ]);
+    const inInbox = inbox.filter((s) => s.date === analysis.issue_date && s.amount === analysis.total_amount);
+    return json({ analysis, duplicates: { freee: inFreee.length, inbox: inInbox.length } });
   }
 
-  if (pathname === "/api/submit" && method === "POST") {
-    const body = (await req.json()) as SubmitBody;
-    return json(await submit(env, body));
+  // ---- 受信箱 ----
+  if (pathname === "/api/entries" && method === "GET") {
+    return json({ entries: await listEntries(env) });
+  }
+
+  if (pathname === "/api/entries" && method === "POST") {
+    const body = (await req.json()) as {
+      image: string; media_type: string; data: EntryData;
+      analysis_total?: number | null; payment_hint?: string; warnings?: string[];
+    };
+    const mediaType = checkImage(body);
+    const data = validateData(body.data);
+    const entry: Entry = {
+      id: newId(),
+      created_at: new Date().toISOString(),
+      status: "pending",
+      media_type: mediaType,
+      data,
+      analysis_total: body.analysis_total ?? null,
+      payment_hint: String(body.payment_hint ?? "").slice(0, 200),
+      warnings: (body.warnings ?? []).map(String).slice(0, 20),
+    };
+    await saveImage(env, entry.id, body.image);
+    await saveEntry(env, entry, await walletName(env, data));
+    return json({ ok: true, id: entry.id });
+  }
+
+  const m = pathname.match(/^\/api\/entries\/([\w-]+)(\/image)?$/);
+  if (m) {
+    const id = m[1];
+    if (m[2]) {
+      const img = await getImage(env, id);
+      const entry = await getEntry(env, id);
+      if (!img || !entry) return json({ error: "画像がありません" }, 404);
+      const bytes = Uint8Array.from(atob(img), (c) => c.charCodeAt(0));
+      return new Response(bytes, { headers: { "Content-Type": entry.media_type, "Cache-Control": "private, max-age=86400" } });
+    }
+    const entry = await getEntry(env, id);
+    if (!entry) return json({ error: "見つかりません" }, 404);
+    if (method === "GET") return json(entry);
+    if (method === "PUT") {
+      if (entry.status === "done") throw new UserError("freee登録済みのため編集できません（freee側で修正してください）");
+      const { data } = (await req.json()) as { data: EntryData };
+      entry.data = validateData(data);
+      entry.status = "pending";
+      delete entry.error;
+      await saveEntry(env, entry, await walletName(env, entry.data));
+      return json({ ok: true });
+    }
+    if (method === "DELETE") {
+      await deleteEntry(env, id);
+      return json({ ok: true });
+    }
+  }
+
+  if (pathname === "/api/sync" && method === "POST") {
+    return json(await syncPending(env, url.searchParams.get("all") === "1"));
   }
 
   return json({ error: "Not found" }, 404);
 }
 
-// ---------- freee への登録 ----------
+// ---------- 入力チェック ----------
 
-interface SubmitBody {
-  image: string;
-  media_type: string;
-  issue_date: string;
-  vendor_name: string;
-  create_partner: boolean;
-  walletable: { id: number; type: string } | null; // null = 未決済
-  qualified_invoice: boolean;
-  memo: string;
-  lines: { account_item_id: number; tax_code: number; amount: number; description: string }[];
-}
-
-async function submit(env: Env, b: SubmitBody) {
-  const mediaType = checkImage(b);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(b.issue_date)) throw new UserError("日付を YYYY-MM-DD で入力してください");
-  if (!b.lines?.length) throw new UserError("明細が空です");
-  for (const l of b.lines) {
+function validateData(d: EntryData): EntryData {
+  if (!d || typeof d !== "object") throw new UserError("内容が空です");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d.issue_date ?? "")) throw new UserError("日付を入力してください");
+  if (!Array.isArray(d.lines) || !d.lines.length) throw new UserError("明細が空です");
+  for (const l of d.lines) {
     if (!l.account_item_id) throw new UserError("勘定科目が未選択の行があります");
+    if (!Number.isInteger(l.tax_code)) throw new UserError("税区分が未選択の行があります");
     if (!Number.isInteger(l.amount) || l.amount <= 0) throw new UserError("金額が正しくない行があります");
   }
-  const total = b.lines.reduce((s, l) => s + l.amount, 0);
-  const fc = await FreeeClient.create(env);
+  return {
+    issue_date: d.issue_date,
+    vendor_name: String(d.vendor_name ?? "").trim().slice(0, 255),
+    create_partner: !!d.create_partner,
+    walletable: d.walletable && d.walletable.id ? { id: Number(d.walletable.id), type: String(d.walletable.type) } : null,
+    qualified_invoice: !!d.qualified_invoice,
+    registration_number: d.registration_number ? String(d.registration_number).slice(0, 20) : null,
+    memo: String(d.memo ?? "").slice(0, 255),
+    lines: d.lines.map((l) => ({
+      account_item_id: Number(l.account_item_id),
+      tax_code: Number(l.tax_code),
+      tax_rate: l.tax_rate ? String(l.tax_rate) : undefined,
+      amount: Number(l.amount),
+      description: String(l.description ?? "").slice(0, 250),
+      reason: l.reason ? String(l.reason).slice(0, 200) : undefined,
+    })),
+  };
+}
 
-  // 1) 証憑（画像）をファイルボックスにアップロード
-  const receiptId = await uploadReceipt(fc, b, mediaType, total);
+async function walletName(env: Env, d: EntryData): Promise<string> {
+  if (!d.walletable) return "未決済";
+  const cached = await env.STORE.get("masters");
+  const m = cached ? (JSON.parse(cached) as Masters) : null;
+  return m?.walletables.find((w) => w.id === d.walletable!.id)?.name ?? "";
+}
+
+// ---------- freee へのまとめて登録 ----------
+
+interface SyncResult {
+  processed: { id: string; vendor: string; amount: number; ok: boolean; deal_id?: number; error?: string }[];
+  remaining: number;
+}
+
+/**
+ * 受信箱の未登録分を古い順に最大 SYNC_BATCH 件 freee に登録する。
+ * remaining > 0 なら、もう一度呼ぶと続きを処理する。
+ * retryErrors=true でエラーになったものも再試行する。
+ */
+async function syncPending(env: Env, retryErrors: boolean): Promise<SyncResult> {
+  const all = await listEntries(env);
+  const targets = all
+    .filter((s) => s.status === "pending" || (retryErrors && s.status === "error"))
+    // 再試行時はエラー分を先に、その後は日付の古い順
+    .sort((a, b) => (a.status === "error" ? 0 : 1) - (b.status === "error" ? 0 : 1) || a.date.localeCompare(b.date));
+  const batch = targets.slice(0, SYNC_BATCH);
+  const fc = await FreeeClient.create(env);
+  const processed: SyncResult["processed"] = [];
+
+  for (const s of batch) {
+    const entry = await getEntry(env, s.id);
+    if (!entry || entry.status === "done") continue;
+    const name = await walletName(env, entry.data);
+    try {
+      await registerEntry(env, fc, entry, name);
+      entry.status = "done";
+      entry.synced_at = new Date().toISOString();
+      delete entry.error;
+      processed.push({ id: entry.id, vendor: entry.data.vendor_name, amount: entryTotal(entry.data), ok: true, deal_id: entry.deal_id });
+    } catch (e) {
+      if (e instanceof FreeeNotConnected) throw e;
+      entry.status = "error";
+      entry.error = errorMessage(e);
+      processed.push({ id: entry.id, vendor: entry.data.vendor_name, amount: entryTotal(entry.data), ok: false, error: entry.error });
+    }
+    await saveEntry(env, entry, name);
+  }
+  return { processed, remaining: Math.max(0, targets.length - batch.length) };
+}
+
+/** 1件を freee に登録。段階ごとに保存するので、途中で失敗して再試行しても証憑が二重にならない */
+async function registerEntry(env: Env, fc: FreeeClient, entry: Entry, walletLabel: string) {
+  const d = entry.data;
+  const total = entryTotal(d);
+
+  // 1) 証憑（画像）をファイルボックスへ
+  if (!entry.receipt_id) {
+    const img = await getImage(env, entry.id);
+    if (!img) throw new Error("画像が見つかりません");
+    entry.receipt_id = await uploadReceipt(fc, d, img, entry.media_type as MediaType, total);
+    await saveEntry(env, entry, walletLabel);
+  }
 
   // 2) 取引先
-  const partnerId = b.create_partner && b.vendor_name ? await findOrCreatePartner(fc, b.vendor_name) : null;
+  if (entry.partner_id === undefined) {
+    entry.partner_id = d.create_partner && d.vendor_name ? await findOrCreatePartner(fc, d.vendor_name) : null;
+  }
 
-  // 3) 取引（支出）を作成し、証憑を紐づける
+  // 3) 支出取引を作成して証憑を紐づけ
   const deal: Record<string, unknown> = {
     company_id: fc.companyId,
-    issue_date: b.issue_date,
+    issue_date: d.issue_date,
     type: "expense",
-    receipt_ids: [receiptId],
-    details: b.lines.map((l) => ({
+    receipt_ids: [entry.receipt_id],
+    details: d.lines.map((l) => ({
       account_item_id: l.account_item_id,
       tax_code: l.tax_code,
       amount: l.amount,
-      description: l.description?.slice(0, 250) || undefined,
+      description: l.description || undefined,
     })),
   };
-  if (partnerId) deal.partner_id = partnerId;
-  if (b.walletable) {
+  if (entry.partner_id) deal.partner_id = entry.partner_id;
+  if (d.walletable) {
     deal.payments = [{
-      date: b.issue_date,
-      from_walletable_type: b.walletable.type,
-      from_walletable_id: b.walletable.id,
+      date: d.issue_date,
+      from_walletable_type: d.walletable.type,
+      from_walletable_id: d.walletable.id,
       amount: total,
     }];
   }
   const created = await fc.send("POST", "/api/1/deals", deal);
-  return { ok: true, deal_id: created.deal?.id, receipt_id: receiptId, amount: total };
+  entry.deal_id = created.deal?.id;
 }
 
-async function uploadReceipt(fc: FreeeClient, b: SubmitBody, mediaType: MediaType, total: number): Promise<number> {
-  const bytes = Uint8Array.from(atob(b.image), (c) => c.charCodeAt(0));
+async function uploadReceipt(fc: FreeeClient, d: EntryData, base64: string, mediaType: MediaType, total: number): Promise<number> {
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
   const ext = mediaType.split("/")[1].replace("jpeg", "jpg");
   const build = (withMeta: boolean) => {
     const f = new FormData();
     f.set("company_id", String(fc.companyId));
-    f.set("receipt", new Blob([bytes], { type: mediaType }), `receipt_${b.issue_date}.${ext}`);
-    f.set("description", [b.vendor_name, b.memo].filter(Boolean).join(" / ").slice(0, 255));
+    f.set("receipt", new Blob([bytes], { type: mediaType }), `receipt_${d.issue_date}.${ext}`);
+    f.set("description", [d.vendor_name, d.memo].filter(Boolean).join(" / ").slice(0, 255));
     if (withMeta) {
-      f.set("receipt_metadatum_partner_name", b.vendor_name.slice(0, 255));
-      f.set("receipt_metadatum_issue_date", b.issue_date);
+      f.set("receipt_metadatum_partner_name", d.vendor_name.slice(0, 255));
+      f.set("receipt_metadatum_issue_date", d.issue_date);
       f.set("receipt_metadatum_amount", String(total));
-      f.set("qualified_invoice", b.qualified_invoice ? "qualified" : "not_qualified");
+      f.set("qualified_invoice", d.qualified_invoice ? "qualified" : "not_qualified");
     }
     return f;
   };
@@ -216,11 +367,20 @@ async function uploadReceipt(fc: FreeeClient, b: SubmitBody, mediaType: MediaTyp
 
 class UserError extends Error {}
 
+function todayJst() {
+  return new Date(Date.now() + 9 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
 function checkImage(b: { image?: string; media_type?: string }): MediaType {
   if (!b.image || typeof b.image !== "string") throw new UserError("画像がありません");
   if (!MEDIA_TYPES.includes(b.media_type as MediaType)) throw new UserError("対応していない画像形式です");
   if (b.image.length > 8_000_000) throw new UserError("画像が大きすぎます");
   return b.media_type as MediaType;
+}
+
+function hasSyncToken(req: Request, env: Env): boolean {
+  const auth = req.headers.get("Authorization") ?? "";
+  return !!env.SYNC_TOKEN && env.SYNC_TOKEN.length >= 16 && auth === `Bearer ${env.SYNC_TOKEN}`;
 }
 
 async function sessionValue(env: Env): Promise<string> {
@@ -243,17 +403,22 @@ function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json; charset=utf-8" } });
 }
 
+function errorMessage(e: unknown): string {
+  if (e instanceof FreeeApiError) {
+    try {
+      const j = JSON.parse(e.body);
+      const msg = j.errors?.flatMap((x: any) => x.messages ?? []).join(" / ") || j.message;
+      if (msg) return `freee: ${msg}`;
+    } catch {}
+    return `freee: ${e.body.slice(0, 300)}`;
+  }
+  return e instanceof Error ? e.message : "不明なエラー";
+}
+
 function errorResponse(e: unknown): Response {
   if (e instanceof UserError) return json({ error: e.message }, 400);
   if (e instanceof FreeeNotConnected) return json({ error: e.message, need_auth: true }, 401);
-  if (e instanceof FreeeApiError) {
-    let msg = e.body;
-    try {
-      const j = JSON.parse(e.body);
-      msg = j.errors?.flatMap((x: any) => x.messages ?? []).join(" / ") || j.message || e.body;
-    } catch {}
-    return json({ error: `freee: ${msg}` }, 502);
-  }
+  if (e instanceof FreeeApiError) return json({ error: errorMessage(e) }, 502);
   console.error(e);
-  return json({ error: e instanceof Error ? e.message : "不明なエラー" }, 500);
+  return json({ error: errorMessage(e) }, 500);
 }

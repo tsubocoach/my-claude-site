@@ -18,3 +18,4 @@ FREEE_REDIRECT_URI = "REPLACE_ME"
 #   FREEE_CLIENT_ID     … freeeアプリのClient ID
 #   FREEE_CLIENT_SECRET … freeeアプリのClient Secret
 #   APP_PASSWORD        … このアプリを開くときのパスワード
+#   SYNC_TOKEN          … （任意）ショートカット等から一括登録するための合言葉。16文字以上
