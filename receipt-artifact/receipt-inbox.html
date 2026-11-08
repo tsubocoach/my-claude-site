@@ -1,0 +1,731 @@
+<title>レシート受信箱</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Zen+Kaku+Gothic+New:wght@400;500;700&family=IBM+Plex+Mono:wght@500;600&display=swap">
+<style>
+/* Layout: one narrow column like a receipt roll — capture on top, inbox below, edit sheet replaces the inbox */
+:root {
+  --bg: #eef1ef;        /* cool paper */
+  --surface: #ffffff;
+  --ink: #18201d;
+  --muted: #5d6a65;
+  --rule: #d5dcd8;
+  --accent: #0f6b5a;    /* ledger green */
+  --accent-ink: #ffffff;
+  --ok: #17663a; --ok-bg: #dcf2e3;
+  --warn: #8a5a00; --warn-bg: #fbefd2;
+  --err: #b42318; --err-bg: #fbe3df;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --font-num: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --r: 12px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #111614; --surface: #1a211e; --ink: #e6ece9; --muted: #95a39d; --rule: #2c3632;
+  --accent: #4cc0a3; --accent-ink: #0b1310;
+  --ok: #6fd69a; --ok-bg: #173323; --warn: #f2c25c; --warn-bg: #3a2f14; --err: #ff8a7a; --err-bg: #3d1b17;
+  color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #111614; --surface: #1a211e; --ink: #e6ece9; --muted: #95a39d; --rule: #2c3632;
+  --accent: #4cc0a3; --accent-ink: #0b1310;
+  --ok: #6fd69a; --ok-bg: #173323; --warn: #f2c25c; --warn-bg: #3a2f14; --err: #ff8a7a; --err-bg: #3d1b17;
+  color-scheme: dark; }
+
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 16px; line-height: 1.55; }
+.wrap { max-width: 560px; margin: 0 auto; padding-block: 16px 40px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 16px; }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+h1 { font-size: 20px; margin: 0; font-weight: 700; letter-spacing: .02em; }
+.top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.company { color: var(--muted); font-size: 13px; }
+.panel { background: var(--surface); border: 1px solid var(--rule); border-radius: var(--r); padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+button, .btn { font: inherit; font-weight: 500; border-radius: 10px; padding: 12px 14px; border: 1px solid var(--rule);
+  background: var(--surface); color: var(--ink); cursor: pointer; min-height: 44px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: .45; cursor: default; }
+.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
+.ghost { background: transparent; }
+.danger { color: var(--err); }
+.row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.row > * { min-width: 0; }
+.shoot { font-size: 17px; padding: 18px 12px; }
+label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+input, select, textarea { width: 100%; font: inherit; padding: 10px; border-radius: 10px; border: 1px solid var(--rule); background: var(--bg); color: var(--ink); min-width: 0; }
+textarea { min-height: 120px; }
+.check { display: flex; align-items: center; gap: 8px; font-size: 15px; color: var(--ink); margin: 0; }
+.check input { width: auto; }
+.hint { font-size: 13px; color: var(--muted); margin: 0; }
+
+/* summary */
+.tally { display: flex; justify-content: space-between; align-items: end; gap: 12px; }
+.tally .big { font-size: 28px; font-weight: 600; line-height: 1.1; }
+.tally .sub { color: var(--muted); font-size: 13px; }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; }
+.filters button { min-height: 36px; padding: 6px 14px; border-radius: 999px; font-size: 14px; }
+.filters button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+
+/* receipt rows: perforated edge between rows */
+.list { display: flex; flex-direction: column; }
+.item { display: grid; grid-template-columns: 3.4em 1fr auto; gap: 2px 10px; align-items: baseline; text-align: left; width: 100%;
+  border: 0; border-bottom: 1px dashed var(--rule); border-radius: 0; background: none; padding: 12px 2px; min-height: 0; }
+.item:last-child { border-bottom: 0; }
+.item .d { color: var(--muted); font-size: 13px; }
+.item .v { font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.item .a { font-weight: 600; text-align: right; }
+.item .meta { grid-column: 2 / 4; display: flex; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); min-width: 0; }
+.item .meta span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pill { font-size: 11px; padding: 1px 8px; border-radius: 999px; white-space: nowrap; font-weight: 500; }
+.pill.pending { background: var(--warn-bg); color: var(--warn); }
+.pill.done { background: var(--ok-bg); color: var(--ok); }
+.pill.error { background: var(--err-bg); color: var(--err); }
+.empty { text-align: center; color: var(--muted); padding: 20px 8px; font-size: 14px; }
+
+.note { border-radius: 10px; padding: 10px 12px; font-size: 14px; }
+.note ul { margin: 4px 0 0; padding-left: 1.2em; }
+.note.warn { background: var(--warn-bg); color: var(--warn); }
+.note.err { background: var(--err-bg); color: var(--err); }
+.note.ok { background: var(--ok-bg); color: var(--ok); }
+
+/* edit sheet */
+.photo { width: 100%; max-height: 320px; object-fit: contain; background: var(--bg); border-radius: 10px; }
+.spin { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 14px; }
+.spin::before { content: ""; width: 18px; height: 18px; flex: none; border: 3px solid var(--rule); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spin::before { animation-duration: 2.4s; } }
+.line { border: 1px solid var(--rule); border-radius: 10px; padding: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.line > * { min-width: 0; }
+.line .full { grid-column: 1 / -1; }
+.line .why { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+.line-head { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--muted); }
+.line-head button { min-height: 32px; padding: 4px 10px; font-size: 13px; }
+.sumline { display: flex; justify-content: space-between; font-weight: 700; }
+.sumline.bad { color: var(--err); }
+.actions { display: grid; grid-template-columns: 1fr 1.4fr; gap: 10px; }
+.foot { font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 6px; }
+.foot code { font-family: var(--font-num); font-size: 12px; }
+#toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+  background: var(--ink); color: var(--bg); padding: 10px 16px; border-radius: 999px; font-size: 14px; z-index: 20;
+  max-width: calc(100vw - 32px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>レシート受信箱</h1>
+    <span class="company" id="company"></span>
+  </header>
+
+  <div class="note err" id="fatal" hidden></div>
+
+  <!-- ホーム -->
+  <div id="home" style="display:flex;flex-direction:column;gap:16px">
+    <section class="panel" aria-label="撮影">
+      <div class="row">
+        <button class="primary shoot" id="cameraBtn" type="button">撮影する</button>
+        <button class="shoot" id="pickBtn" type="button">写真から選ぶ</button>
+      </div>
+      <input type="file" accept="image/*" capture="environment" id="cameraInput" hidden>
+      <input type="file" accept="image/*" id="pickInput" hidden>
+      <p class="hint" id="shootHint">現金で払ったら、その場で撮影。AIが日付・金額・勘定科目を読み取って受信箱に入れます。</p>
+    </section>
+
+    <section class="panel" aria-label="受信箱">
+      <div class="tally">
+        <div>
+          <div class="sub">未登録 <span class="num" id="todoCount">0</span> 件</div>
+          <div class="big num" id="todoSum">¥0</div>
+        </div>
+        <div class="filters" role="group" aria-label="表示">
+          <button type="button" data-f="todo" aria-pressed="true">未登録</button>
+          <button type="button" data-f="done" aria-pressed="false">登録済み</button>
+          <button type="button" data-f="all" aria-pressed="false">すべて</button>
+        </div>
+      </div>
+      <button class="primary" id="syncBtn" type="button" disabled>まとめてfreeeに登録</button>
+      <div class="spin" id="syncing" hidden></div>
+      <div class="note" id="syncResult" hidden></div>
+      <div class="list" id="list"><div class="empty">読み込み中…</div></div>
+    </section>
+
+    <section class="panel foot" aria-label="使い方">
+      <strong style="color:var(--ink)">freeeへの登録</strong>
+      <span>上のボタンのほか、Claudeに「レシート受信箱の未登録分をfreeeに登録して」と頼んでも登録できます。</span>
+      <span>画像はこのページに控えとして残ります（原本は紙で保管）。freeeには取引（日付・取引先・金額・科目・税区分・支払口座）が入ります。</span>
+      <button type="button" class="ghost" id="settingsBtn">設定（いつもの支払方法・科目のルール）</button>
+    </section>
+  </div>
+
+  <!-- 設定 -->
+  <section class="panel" id="settings" hidden aria-label="設定">
+    <h2 style="font-size:16px;margin:0">設定</h2>
+    <div>
+      <label for="defaultWallet">いつもの支払方法（AIが判断できないとき）</label>
+      <select id="defaultWallet"></select>
+    </div>
+    <div>
+      <label for="rules">勘定科目のルール（AIが最優先で従います）</label>
+      <textarea id="rules" placeholder="例：&#10;・スターバックス、ドトール → 会議費&#10;・ENEOS、出光 → 車両費&#10;・コインパーキング → 旅費交通費"></textarea>
+    </div>
+    <div class="actions">
+      <button type="button" id="settingsCancel">戻る</button>
+      <button type="button" class="primary" id="settingsSave">保存</button>
+    </div>
+  </section>
+
+  <!-- 確認・編集 -->
+  <section class="panel" id="sheet" hidden aria-label="レシートの内容">
+    <img class="photo" id="photo" alt="レシートの写真">
+    <div class="spin" id="reading" hidden>読み取り中…（10〜30秒）</div>
+    <div class="note err" id="readErr" hidden></div>
+    <div class="note" id="statusNote" hidden></div>
+
+    <form id="form" hidden style="display:flex;flex-direction:column;gap:12px">
+      <div class="note warn" id="warnings" hidden></div>
+      <div class="note warn" id="dupes" hidden></div>
+      <div class="row">
+        <div><label for="date">取引日</label><input type="date" id="date" required></div>
+        <div><label for="total">合計（税込）</label><input id="total" class="num" readonly></div>
+      </div>
+      <div>
+        <label for="vendor">取引先（店名）</label>
+        <input id="vendor" autocomplete="off">
+      </div>
+      <label class="check"><input type="checkbox" id="partner" checked> freeeの取引先に登録・紐づけ</label>
+      <div>
+        <label for="wallet">支払方法</label>
+        <select id="wallet"></select>
+        <p class="hint" id="payHint"></p>
+      </div>
+      <label class="check"><input type="checkbox" id="qualified"> 適格請求書（登録番号あり）<span class="hint num" id="regNo"></span></label>
+      <div id="lines" style="display:flex;flex-direction:column;gap:8px"></div>
+      <button type="button" id="addLine">＋ 明細を追加</button>
+      <div class="sumline" id="sumline"></div>
+      <div>
+        <label for="memo">メモ</label>
+        <input id="memo">
+      </div>
+      <div class="note err" id="saveErr" hidden></div>
+      <div class="actions">
+        <button type="button" id="back">戻る</button>
+        <button type="submit" class="primary" id="saveBtn">受信箱に保存</button>
+      </div>
+      <button type="button" class="ghost danger" id="delBtn" hidden>このレシートを削除</button>
+    </form>
+  </section>
+</div>
+<div id="toast" hidden role="status"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const yen = (n) => "¥" + (Number(n) || 0).toLocaleString("ja-JP");
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const todayJst = () => new Date(Date.now() + 9 * 3600e3).toISOString().slice(0, 10);
+const FREEE = "freee";
+
+const S = {
+  db: null, assets: null, sample: null, mcp: null,
+  masters: null, settings: { rules: "", default_wallet: "" }, settingsVersionKnown: false,
+  receipts: [], filter: "todo",
+  cur: null, // { id|null, blob|null, imageUrl, assetId, analysisTotal, warnings, paymentHint, registration_number, status }
+};
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => (t.hidden = true), 2600);
+}
+function fatal(msg) { $("fatal").textContent = msg; $("fatal").hidden = false; }
+
+// ---------- 起動 ----------
+async function boot() {
+  const [db, assets, sample, mcp] = await Promise.all(["db", "assets", "sample", "mcp"].map((n) => window.claude?.use?.(n) ?? null));
+  Object.assign(S, { db, assets, sample, mcp });
+  if (!db) { fatal("受信箱に接続できません。claude.ai にサインインした状態でこのページを開いてください。"); $("list").innerHTML = ""; return; }
+  if (!sample) { $("shootHint").textContent = "このビューではAIの読み取りが使えません。claude.ai で開くと使えます。"; }
+
+  let loaded = false;
+  const timer = setTimeout(() => { if (!loaded) $("list").innerHTML = '<div class="empty">受信箱の読み込みに時間がかかっています。少し待ってから開き直してください。</div>'; }, 10000);
+
+  db.doc("config/masters").onSnapshot((s) => {
+    S.masters = s.exists ? s.data() : null;
+    $("company").textContent = S.masters?.company_name || "";
+    if (!S.masters) fatal("freeeの勘定科目・口座がまだ読み込まれていません。Claudeに「レシート受信箱にfreeeの科目を読み込んで」と頼んでください。");
+    else $("fatal").hidden = true;
+    render();
+  }, (e) => fatal("設定を読み込めませんでした（" + e.code + "）"));
+  db.doc("config/settings").onSnapshot((s) => { if (s.exists) S.settings = { rules: "", default_wallet: "", ...s.data() }; });
+  db.collection("receipts").onSnapshot((snap) => {
+    loaded = true; clearTimeout(timer);
+    S.receipts = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+    render();
+  }, (e) => { clearTimeout(timer); $("list").innerHTML = `<div class="empty">受信箱を読み込めませんでした（${esc(e.code)}）</div>`; });
+}
+
+// ---------- 一覧 ----------
+const todoOf = () => S.receipts.filter((r) => r.status !== "done");
+const totalOf = (r) => (r.lines || []).reduce((s, l) => s + (Number(l.amount) || 0), 0);
+const walletName = (w) => !w ? "未決済" : (S.masters?.walletables.find((x) => x.id === w.id)?.name || w.name || "");
+
+function render() {
+  const todo = todoOf();
+  $("todoCount").textContent = todo.length;
+  $("todoSum").textContent = yen(todo.reduce((s, r) => s + totalOf(r), 0));
+  if (!syncing) {
+    $("syncBtn").disabled = !todo.length || !S.masters;
+    $("syncBtn").textContent = todo.length ? `まとめてfreeeに登録（${todo.length}件）` : "未登録のレシートはありません";
+    syncArmed = false;
+  }
+  const rows = S.filter === "todo" ? todo : S.filter === "done" ? S.receipts.filter((r) => r.status === "done") : S.receipts;
+  const list = $("list");
+  if (!rows.length) {
+    list.innerHTML = `<div class="empty">${S.filter === "todo" ? "未登録のレシートはありません。上の「撮影する」から追加できます。" : "まだありません"}</div>`;
+    return;
+  }
+  const label = { pending: "未登録", done: "登録済み", error: "エラー" };
+  list.innerHTML = "";
+  for (const r of rows) {
+    const b = document.createElement("button"); b.type = "button"; b.className = "item";
+    b.innerHTML = `<span class="d num">${esc((r.issue_date || "").slice(5).replace("-", "/"))}</span>
+      <span class="v">${esc(r.vendor_name || "（店名なし）")}</span>
+      <span class="a num">${yen(totalOf(r))}</span>
+      <span class="meta"><span>${esc(walletName(r.walletable))}・${esc((r.lines || []).map((l) => l.account_item_name).filter(Boolean).join("/"))}</span>
+      <span class="pill ${esc(r.status)}">${label[r.status] || r.status}</span></span>`;
+    b.onclick = () => openReceipt(r.id);
+    list.append(b);
+  }
+}
+document.querySelectorAll(".filters button").forEach((b) => (b.onclick = () => {
+  S.filter = b.dataset.f;
+  document.querySelectorAll(".filters button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  render();
+}));
+
+// ---------- 画面切替 ----------
+function showHome() {
+  S.cur = null;
+  $("home").hidden = false; $("sheet").hidden = true; $("settings").hidden = true;
+  $("cameraInput").value = ""; $("pickInput").value = "";
+  window.scrollTo(0, 0);
+}
+function showSheet() {
+  $("home").hidden = true; $("settings").hidden = true; $("sheet").hidden = false;
+  $("form").hidden = true; $("readErr").hidden = true; $("statusNote").hidden = true;
+  window.scrollTo(0, 0);
+}
+
+// ---------- 撮影・読み取り ----------
+$("cameraBtn").onclick = () => $("cameraInput").click();
+$("pickBtn").onclick = () => $("pickInput").click();
+$("cameraInput").onchange = (e) => e.target.files[0] && onPhoto(e.target.files[0]);
+$("pickInput").onchange = (e) => e.target.files[0] && onPhoto(e.target.files[0]);
+
+function loadImg(file) {
+  return new Promise((ok, ng) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => ng(new Error("写真を読み込めませんでした")); i.src = URL.createObjectURL(file); });
+}
+async function shrink(file, maxEdge = 1800, maxBytes = 3_500_000) {
+  const img = await loadImg(file);
+  let edge = maxEdge, q = 0.85, blob;
+  for (let i = 0; i < 5; i++) {
+    const s = Math.min(1, edge / Math.max(img.naturalWidth, img.naturalHeight));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+    blob = await new Promise((r) => c.toBlob(r, "image/jpeg", q));
+    if (blob.size <= maxBytes) break;
+    edge *= 0.8; q -= 0.05;
+  }
+  return blob;
+}
+
+function promptFor() {
+  const m = S.masters;
+  const items = m.account_items.map((a) => `${a.id}: ${a.name}（${a.category}）`).join("\n");
+  const wallets = m.walletables.map((w) => `${w.id}: ${w.name}（${w.type}）`).join("\n");
+  return `あなたは日本の中小企業の経理担当です。添付画像のレシート・領収書を読み取り、freee会計に「支出」として登録するためのJSONだけを返してください。説明文やコードブロックは不要です。
+
+# 方針
+- 金額は印字された数字を正確に読む。推測しない。読めない箇所は warnings に書く。
+- 明細は品目ごとではなく「勘定科目×税率」ごとに合算。軽減税率(8%、※印など)と10%が混在すれば分ける。
+- lines の amount（税込・円・整数）の合計は total_amount と一致させる。値引きは該当行から引く。
+- 勘定科目は下の一覧の id からのみ選ぶ。目安: 電車・バス・タクシー・駐車場→旅費交通費、打合せの飲食→会議費、接待・贈答→交際費、文房具→事務用品費、10万円未満の物品→消耗品費、書籍→新聞図書費、切手→通信費(非課税)、ガソリン→車両費。10万円以上の物品は warnings で注意。
+- 登録番号(T+13桁)があれば抜き出す。
+- 支払方法は「お預り」「現金」→cash、「クレジット」→credit_card、「交通系IC/Suica」→ic_card、「PayPay等」→qr_or_electronic。口座一覧から合うものがあれば suggested_walletable_id に。
+- 今日は ${todayJst()}。年が無い場合の参考に。
+
+# ユーザーのルール（最優先）
+${(S.settings.rules || "").trim() || "（なし）"}
+
+# 勘定科目一覧（id: 名前（区分））
+${items}
+
+# 口座一覧（id: 名前（種類））
+${wallets}
+
+# 出力形式（このキーのJSONオブジェクト1つ）
+{"is_receipt": true, "vendor_name": "店名", "issue_date": "YYYY-MM-DD", "total_amount": 0,
+ "invoice_registration_number": "T…" または null,
+ "payment_method": "cash|credit_card|ic_card|qr_or_electronic|bank_transfer|unknown",
+ "payment_detail": "カード下4桁など" または null, "suggested_walletable_id": 数値 または null,
+ "lines": [{"description": "内容", "amount": 0, "tax_rate": "10|8_reduced|non_taxable|tax_exempt", "account_item_id": 数値, "reason": "選んだ理由"}],
+ "memo": "短い説明", "warnings": ["確認すべき点"]}`;
+}
+
+async function onPhoto(file) {
+  if (!S.masters) { toast("先にfreeeの科目を読み込んでください"); return; }
+  showSheet();
+  $("reading").hidden = false;
+  try {
+    const blob = await shrink(file);
+    S.cur = { id: null, blob, imageUrl: URL.createObjectURL(blob), status: "pending" };
+    $("photo").src = S.cur.imageUrl;
+    if (!S.sample) throw { code: "unavailable", message: "AIの読み取りが使えないため、手入力してください。" };
+    const a = await S.sample.json(promptFor(), { images: [blob], cache: false });
+    fillForm(fromAnalysis(a), a, true);
+  } catch (e) {
+    const msg = e?.code === "not_granted" ? "AIの読み取りが許可されていません。ページの許可設定で「Claude」を許可してください。"
+      : e?.code === "rate_limited" ? "混み合っています。少し待ってからもう一度撮影してください。"
+      : (e?.message || "読み取りに失敗しました");
+    $("readErr").textContent = msg + "（内容は手入力できます）";
+    $("readErr").hidden = false;
+    if (S.cur) fillForm(blankData(), {}, true);
+  } finally {
+    $("reading").hidden = true;
+  }
+}
+
+// ---------- 税区分 ----------
+function taxByName(...names) { for (const n of names) { const t = S.masters.taxes.find((x) => x.name === n); if (t) return t; } return null; }
+function taxFor(rate, qualified, date) {
+  const tr = (date || "") >= "2026-10-01" ? "_exempt_70" : "_exempt_80";
+  if (rate === "10") return (!qualified && taxByName("purchase_with_tax_10" + tr)) || taxByName("purchase_with_tax_10");
+  if (rate === "8_reduced") return (!qualified && taxByName("purchase_with_tax_reduced_8" + tr)) || taxByName("purchase_with_tax_reduced_8");
+  if (rate === "tax_exempt") return taxByName("purchase_no_tax", "non_taxable");
+  return taxByName("non_taxable", "without_tax");
+}
+
+// ---------- データ変換 ----------
+function cashWallet() { return S.masters.walletables.find((w) => w.type === "wallet" && w.name.includes("現金")) || null; }
+function defaultWallet() {
+  const v = S.settings.default_wallet;
+  if (v === "none") return null;
+  return S.masters.walletables.find((w) => `${w.type}:${w.id}` === v) || cashWallet();
+}
+function blankData() {
+  const w = defaultWallet();
+  return { issue_date: todayJst(), vendor_name: "", create_partner: true, walletable: w ? { id: w.id, type: w.type } : null,
+    qualified_invoice: false, registration_number: null, memo: "", lines: [{ account_item_id: 0, tax_rate: "10", amount: 0, description: "" }] };
+}
+function fromAnalysis(a) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(a?.issue_date || "") ? a.issue_date : todayJst();
+  const qualified = !!a?.invoice_registration_number;
+  let w = S.masters.walletables.find((x) => x.id === a?.suggested_walletable_id);
+  if (!w && a?.payment_method === "cash") w = cashWallet();
+  if (!w && (!a?.payment_method || a.payment_method === "unknown")) w = defaultWallet();
+  const ids = new Set(S.masters.account_items.map((x) => x.id));
+  const lines = (Array.isArray(a?.lines) && a.lines.length ? a.lines : [{ amount: a?.total_amount || 0, tax_rate: "10" }]).map((l) => ({
+    account_item_id: ids.has(Number(l.account_item_id)) ? Number(l.account_item_id) : 0,
+    tax_rate: ["10", "8_reduced", "non_taxable", "tax_exempt"].includes(l.tax_rate) ? l.tax_rate : "10",
+    amount: Math.round(Number(l.amount) || 0), description: String(l.description || ""), reason: String(l.reason || ""),
+  }));
+  return { issue_date: date, vendor_name: String(a?.vendor_name || ""), create_partner: true,
+    walletable: w ? { id: w.id, type: w.type } : null, qualified_invoice: qualified,
+    registration_number: a?.invoice_registration_number || null, memo: String(a?.memo || ""), lines };
+}
+
+// ---------- フォーム ----------
+const PM = { cash: "現金", credit_card: "クレジットカード", ic_card: "交通系IC", qr_or_electronic: "QR・電子マネー", bank_transfer: "振込", unknown: "不明" };
+
+function fillWalletSelect(sel, noneLabel, noneValue = "") {
+  sel.innerHTML = "";
+  const typeLabel = { wallet: "現金・電子マネー", credit_card: "クレジットカード", bank_account: "銀行口座" };
+  for (const type of ["wallet", "credit_card", "bank_account"]) {
+    const g = document.createElement("optgroup"); g.label = typeLabel[type];
+    S.masters.walletables.filter((w) => w.type === type).forEach((w) => g.append(new Option(w.name, `${w.type}:${w.id}`)));
+    if (g.children.length) sel.add(g);
+  }
+  sel.add(new Option(noneLabel, noneValue));
+}
+
+function fillForm(d, a, isNew) {
+  S.cur.analysisTotal = a.total_amount ?? S.cur.analysisTotal ?? null;
+  S.cur.warnings = a.warnings || S.cur.warnings || [];
+  S.cur.paymentHint = a.payment_method ? `${PM[a.payment_method] || "不明"}${a.payment_detail ? "（" + a.payment_detail + "）" : ""}` : (S.cur.paymentHint || "");
+  S.cur.registration_number = d.registration_number;
+
+  if (a.is_receipt === false) { $("readErr").textContent = "レシート・領収書として読み取れませんでした。撮り直すか手入力してください。"; $("readErr").hidden = false; }
+  $("date").value = d.issue_date; $("vendor").value = d.vendor_name; $("partner").checked = d.create_partner !== false;
+  $("memo").value = d.memo || ""; $("qualified").checked = !!d.qualified_invoice;
+  $("regNo").textContent = d.registration_number ? " " + d.registration_number : "";
+  fillWalletSelect($("wallet"), "未決済（あとで消込）");
+  $("wallet").value = d.walletable ? `${d.walletable.type}:${d.walletable.id}` : "";
+  $("payHint").textContent = S.cur.paymentHint ? `レシート上の支払方法：${S.cur.paymentHint}` : "";
+  $("lines").innerHTML = ""; d.lines.forEach(addLine); updateSum();
+
+  const w = $("warnings");
+  w.innerHTML = S.cur.warnings.length ? "<strong>確認してください</strong><ul>" + S.cur.warnings.map((x) => `<li>${esc(x)}</li>`).join("") + "</ul>" : "";
+  w.hidden = !S.cur.warnings.length;
+  const dup = isNew ? S.receipts.filter((r) => r.issue_date === d.issue_date && totalOf(r) === d.lines.reduce((s, l) => s + l.amount, 0)) : [];
+  $("dupes").innerHTML = dup.length ? `<strong>同じ日付・金額のレシートが受信箱に${dup.length}件あります。</strong>二重に撮っていないか確認してください。` : "";
+  $("dupes").hidden = !dup.length;
+
+  const locked = S.cur.status === "done";
+  $("form").querySelectorAll("input, select, #addLine, .line button").forEach((el) => (el.disabled = locked));
+  $("saveBtn").hidden = locked;
+  $("saveBtn").textContent = isNew ? "受信箱に保存" : "変更を保存";
+  $("delBtn").hidden = isNew; $("delBtn").textContent = "このレシートを削除"; delArmed = false;
+  $("saveErr").hidden = true;
+  $("form").hidden = false;
+}
+
+function accountSelect(selected) {
+  const s = document.createElement("select"); s.className = "acct full"; s.setAttribute("aria-label", "勘定科目");
+  s.add(new Option("勘定科目を選択", "0"));
+  const order = ["経費", "売上原価", "製品売上原価", "有形固定資産", "無形固定資産", "他流動資産", "棚卸資産", "事業主貸"];
+  const rank = (c) => { const i = order.indexOf(c); return i < 0 ? 99 : i; };
+  const groups = {};
+  S.masters.account_items.forEach((a) => (groups[a.category] ||= []).push(a));
+  Object.keys(groups).sort((x, y) => rank(x) - rank(y)).forEach((cat) => {
+    const g = document.createElement("optgroup"); g.label = cat;
+    groups[cat].forEach((a) => g.append(new Option(a.name, a.id))); s.add(g);
+  });
+  s.value = String(selected || 0);
+  return s;
+}
+function taxSelect(code) {
+  const s = document.createElement("select"); s.className = "tax"; s.setAttribute("aria-label", "税区分");
+  S.masters.taxes.forEach((t) => s.add(new Option(t.name_ja, t.code)));
+  if (code != null) s.value = String(code);
+  return s;
+}
+function addLine(l = { account_item_id: 0, tax_rate: "10", amount: 0, description: "" }) {
+  const div = document.createElement("div"); div.className = "line";
+  div.dataset.rate = l.tax_rate || ""; div.dataset.reason = l.reason || "";
+  const head = document.createElement("div"); head.className = "line-head";
+  head.innerHTML = "<span>明細</span>";
+  const del = document.createElement("button"); del.type = "button"; del.textContent = "行を削除";
+  del.onclick = () => { div.remove(); updateSum(); };
+  head.append(del);
+  const acct = accountSelect(l.account_item_id);
+  const code = l.tax_code ?? taxFor(l.tax_rate || "10", $("qualified").checked, $("date").value)?.code;
+  const tax = taxSelect(code);
+  tax.onchange = () => (div.dataset.rate = "");
+  acct.onchange = () => {
+    const it = S.masters.account_items.find((x) => x.id === Number(acct.value));
+    if (it && !S.masters.taxes.some((t) => t.code === Number(tax.value))) tax.value = String(it.default_tax_code);
+  };
+  const amt = document.createElement("input"); amt.className = "amt num"; amt.type = "number"; amt.inputMode = "numeric";
+  amt.placeholder = "金額"; amt.value = l.amount || ""; amt.setAttribute("aria-label", "金額（税込）"); amt.oninput = updateSum;
+  const desc = document.createElement("input"); desc.className = "desc full"; desc.placeholder = "摘要（例：打合せ コーヒー）";
+  desc.value = l.description || ""; desc.setAttribute("aria-label", "摘要");
+  div.append(head, acct, tax, amt, desc);
+  if (l.reason) { const w = document.createElement("div"); w.className = "why"; w.textContent = "AI：" + l.reason; div.append(w); }
+  $("lines").append(div);
+}
+$("addLine").onclick = () => { addLine(); updateSum(); };
+
+function readLines() {
+  return [...document.querySelectorAll("#lines .line")].map((d) => {
+    const acctId = Number(d.querySelector(".acct").value), taxCode = Number(d.querySelector(".tax").value);
+    return {
+      account_item_id: acctId,
+      account_item_name: S.masters.account_items.find((x) => x.id === acctId)?.name || "",
+      tax_code: taxCode,
+      tax_name: S.masters.taxes.find((x) => x.code === taxCode)?.name_ja || "",
+      tax_rate: d.dataset.rate || null,
+      amount: Math.round(Number(d.querySelector(".amt").value) || 0),
+      description: d.querySelector(".desc").value.trim(),
+      reason: d.dataset.reason || null,
+    };
+  });
+}
+function updateSum() {
+  const t = readLines().reduce((s, l) => s + l.amount, 0);
+  $("total").value = yen(t);
+  const read = S.cur?.analysisTotal, el = $("sumline");
+  if (read && read !== t) { el.className = "sumline bad"; el.innerHTML = `<span>明細合計 <span class="num">${yen(t)}</span></span><span>レシート <span class="num">${yen(read)}</span></span>`; }
+  else { el.className = "sumline"; el.innerHTML = `<span>合計</span><span class="num">${yen(t)}</span>`; }
+}
+function retax() {
+  document.querySelectorAll("#lines .line").forEach((d) => {
+    if (!d.dataset.rate) return;
+    const t = taxFor(d.dataset.rate, $("qualified").checked, $("date").value);
+    if (t) d.querySelector(".tax").value = String(t.code);
+  });
+}
+$("qualified").onchange = retax; $("date").onchange = retax;
+$("back").onclick = showHome;
+
+async function openReceipt(id) {
+  const r = S.receipts.find((x) => x.id === id); if (!r || !S.masters) return;
+  showSheet();
+  S.cur = { id, blob: null, imageUrl: r.image_url, assetId: r.image_asset_id, status: r.status,
+    analysisTotal: r.analysis_total, warnings: r.warnings || [], paymentHint: r.payment_hint || "" };
+  $("photo").src = r.image_url || "";
+  $("photo").hidden = !r.image_url;
+  const st = $("statusNote");
+  if (r.status === "done") { st.className = "note ok"; st.textContent = `freee登録済み（取引ID ${r.deal_id}）。修正はfreee側で行ってください。`; st.hidden = false; }
+  else if (r.status === "error") { st.className = "note err"; st.textContent = "前回の登録でエラー：" + (r.error || ""); st.hidden = false; }
+  fillForm(r, {}, false);
+}
+
+// ---------- 保存・削除 ----------
+function validate(d) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d.issue_date)) return "取引日を入力してください";
+  if (!d.lines.length) return "明細がありません";
+  if (d.lines.some((l) => !l.account_item_id)) return "勘定科目が未選択の明細があります";
+  if (d.lines.some((l) => !(l.amount > 0))) return "金額が入っていない明細があります";
+  return null;
+}
+$("form").onsubmit = async (e) => {
+  e.preventDefault();
+  const wv = $("wallet").value, [wt, wid] = wv ? wv.split(":") : [];
+  const d = {
+    issue_date: $("date").value, vendor_name: $("vendor").value.trim(), create_partner: $("partner").checked,
+    walletable: wv ? { type: wt, id: Number(wid), name: S.masters.walletables.find((x) => x.id === Number(wid))?.name || "" } : null,
+    qualified_invoice: $("qualified").checked, registration_number: S.cur.registration_number || null,
+    memo: $("memo").value.trim(), lines: readLines(),
+  };
+  const bad = validate(d);
+  if (bad) { $("saveErr").textContent = bad; $("saveErr").hidden = false; return; }
+  const btn = $("saveBtn"), label = btn.textContent; btn.disabled = true; btn.textContent = "保存中…"; $("saveErr").hidden = true;
+  try {
+    if (S.cur.id) {
+      await S.db.doc("receipts/" + S.cur.id).update({ ...d, status: "pending", error: null, updated_at: new Date().toISOString() });
+    } else {
+      let image_asset_id = null, image_url = null;
+      if (S.cur.blob && S.assets) {
+        try { const up = await S.assets.upload(S.cur.blob, { type: "image/jpeg" }); image_asset_id = up.id; image_url = up.url; }
+        catch (err) { toast("写真の保存に失敗しました（内容は保存します）"); }
+      }
+      const id = new Date().toISOString().replace(/\D/g, "").slice(0, 14) + "-" + Math.random().toString(36).slice(2, 6);
+      await S.db.doc("receipts/" + id).set({
+        ...d, status: "pending", created_at: new Date().toISOString(),
+        image_asset_id, image_url, analysis_total: S.cur.analysisTotal ?? null,
+        warnings: S.cur.warnings || [], payment_hint: S.cur.paymentHint || "",
+      });
+    }
+    toast(`保存しました（${d.vendor_name || "レシート"} ${yen(d.lines.reduce((s, l) => s + l.amount, 0))}）`);
+    showHome();
+  } catch (err) {
+    $("saveErr").textContent = "保存できませんでした（" + (err?.code || err?.message || "") + "）。もう一度お試しください。";
+    $("saveErr").hidden = false;
+  } finally { btn.disabled = false; btn.textContent = label; }
+};
+
+let delArmed = false;
+$("delBtn").onclick = async () => {
+  if (!delArmed) { delArmed = true; $("delBtn").textContent = "もう一度押すと削除します"; return; }
+  try {
+    await S.db.doc("receipts/" + S.cur.id).delete();
+    if (S.cur.assetId && S.assets) S.assets.delete(S.cur.assetId).catch(() => {});
+    toast("削除しました"); showHome();
+  } catch (err) { $("saveErr").textContent = "削除できませんでした（" + (err?.code || "") + "）"; $("saveErr").hidden = false; }
+};
+
+// ---------- 設定 ----------
+$("settingsBtn").onclick = () => {
+  if (!S.masters) { toast("先にfreeeの科目を読み込んでください"); return; }
+  fillWalletSelect($("defaultWallet"), "未決済", "none");
+  const w = defaultWallet();
+  $("defaultWallet").value = S.settings.default_wallet === "none" ? "none" : (w ? `${w.type}:${w.id}` : "none");
+  $("rules").value = S.settings.rules || "";
+  $("home").hidden = true; $("settings").hidden = false;
+};
+$("settingsCancel").onclick = showHome;
+$("settingsSave").onclick = async () => {
+  try {
+    await S.db.doc("config/settings").set({ rules: $("rules").value.slice(0, 5000), default_wallet: $("defaultWallet").value });
+    toast("設定を保存しました"); showHome();
+  } catch (err) { toast("保存できませんでした（" + (err?.code || "") + "）"); }
+};
+
+// ---------- freee にまとめて登録 ----------
+let syncing = false, syncArmed = false;
+
+function parseTool(res) {
+  if (res && typeof res.payload === "object" && res.payload !== null) return res.payload;
+  const text = (res?.content || []).filter((c) => c.type === "text").map((c) => c.text).join("\n").trim();
+  try { return JSON.parse(text); } catch { throw new Error(text || "freeeから応答がありませんでした"); }
+}
+async function freee(tool, input) {
+  if (!S.mcp) throw { code: "no_mcp" };
+  return parseTool(await S.mcp.callTool(FREEE, tool, input));
+}
+function mcpMessage(e) {
+  switch (e?.code) {
+    case "no_mcp": case "not_granted": return "このページからfreeeを使う許可がありません。ページの許可設定でfreeeを許可するか、Claudeに登録を頼んでください。";
+    case "server_not_connected": case "server_not_found": return "freeeがclaude.aiに連携されていません。設定 → コネクタ でfreeeを追加してください。";
+    case "needs_reauth": return "freeeの連携が切れています。claude.ai の設定 → コネクタ でfreeeに再ログインしてください。";
+    case "approval_required": case "consent_required": return "freeeの利用を許可してください（claude.aiで開くと確認が出ます）。";
+    case "rate_limited": return "freeeが混み合っています。少し待ってからもう一度押してください。";
+    case "blocked_by_policy": return "組織の設定でこのページからのfreee利用が止められています。Claudeに登録を頼んでください。";
+    default: return e?.message || "freeeへの登録に失敗しました";
+  }
+}
+
+async function findOrCreatePartner(name) {
+  const cid = S.masters.company_id;
+  const found = await freee("freee_api_get", { service: "accounting", path: "/api/1/partners", query: { company_id: cid, keyword: name, limit: 50 } });
+  const hit = (found.partners || []).find((p) => p.name === name);
+  if (hit) return hit.id;
+  const made = await freee("freee_api_post", { service: "accounting", path: "/api/1/partners", body: { company_id: cid, name } });
+  return made.partner?.id ?? null;
+}
+
+async function registerOne(r) {
+  const total = totalOf(r);
+  let partnerId = r.partner_id ?? null;
+  if (partnerId == null && r.create_partner !== false && r.vendor_name) {
+    partnerId = await findOrCreatePartner(r.vendor_name);
+    await S.db.doc("receipts/" + r.id).update({ partner_id: partnerId });
+  }
+  const body = {
+    company_id: S.masters.company_id, issue_date: r.issue_date, type: "expense",
+    details: r.lines.map((l) => ({ account_item_id: l.account_item_id, tax_code: l.tax_code, amount: l.amount, ...(l.description ? { description: l.description } : {}) })),
+  };
+  if (partnerId) body.partner_id = partnerId;
+  if (r.walletable) body.payments = [{ date: r.issue_date, from_walletable_type: r.walletable.type, from_walletable_id: r.walletable.id, amount: total }];
+  const res = await freee("freee_api_post", { service: "accounting", path: "/api/1/deals", body });
+  const dealId = res.deal?.id;
+  if (!dealId) throw new Error("freeeの応答に取引IDがありません：" + JSON.stringify(res).slice(0, 200));
+  return dealId;
+}
+
+$("syncBtn").onclick = async () => {
+  const todo = todoOf().slice().sort((a, b) => String(a.issue_date).localeCompare(String(b.issue_date)));
+  if (!todo.length) return;
+  if (!syncArmed) {
+    syncArmed = true;
+    $("syncBtn").textContent = `${todo.length}件 ${yen(todo.reduce((s, r) => s + totalOf(r), 0))} を登録する（もう一度押す）`;
+    return;
+  }
+  syncing = true; syncArmed = false;
+  $("syncBtn").disabled = true; $("syncResult").hidden = true; $("syncing").hidden = false;
+  let ok = 0; const failed = []; let stop = null;
+  for (const r of todo) {
+    $("syncing").textContent = `登録中… ${ok + failed.length + 1} / ${todo.length}`;
+    try {
+      const dealId = await registerOne(r);
+      await S.db.doc("receipts/" + r.id).update({ status: "done", deal_id: dealId, error: null, synced_at: new Date().toISOString() });
+      ok++;
+    } catch (e) {
+      // 連携そのものの問題は全件同じなので、そこで止める
+      if (e?.code && e.code !== "tool_error" && e.code !== "upstream_error") { stop = mcpMessage(e); break; }
+      const msg = mcpMessage(e).slice(0, 300);
+      failed.push({ r, msg });
+      await S.db.doc("receipts/" + r.id).update({ status: "error", error: msg }).catch(() => {});
+    }
+  }
+  syncing = false; $("syncing").hidden = true;
+  const box = $("syncResult");
+  box.className = "note " + (failed.length || stop ? "err" : "ok");
+  box.innerHTML = (ok ? `${ok}件をfreeeに登録しました。` : "")
+    + (stop ? `<br>${esc(stop)}` : "")
+    + (failed.length ? `<br><strong>${failed.length}件は登録できませんでした：</strong><ul>${failed.map((f) => `<li>${esc(f.r.vendor_name)} ${yen(totalOf(f.r))}：${esc(f.msg)}</li>`).join("")}</ul>直して保存してから、もう一度押してください。` : "");
+  box.hidden = false;
+  render();
+};
+
+boot();
+</script>
